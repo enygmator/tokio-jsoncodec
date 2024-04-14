@@ -1,36 +1,42 @@
-//! This crate integrates [`serde_json`] into a Tokio codec ([`tokio_codec::Decoder`] and
-//! [`Encoder`]).
+//! This crate provides you with a Tokio codec ([`Decoder`] and
+//! [`Encoder`]), which internally uses [`serde_json`] to serialize
+//! and deserialize JSON values.
+//!
+//! You can work with the [`Stream`] and [`Sink`] on [`Framed`] that
+//! the codec provides, where the stream emits deserialized values
+//! and the sink accepts values to be serialized.
+//!
+//! [`Decoder`]: tokio_util::codec::Decoder
+//! [`Encoder`]: tokio_util::codec::Encoder
+//! [`Stream`]: https://docs.rs/futures/latest/futures/trait.Stream.html
+//! [`Sink`]: https://docs.rs/futures/latest/futures/sink/trait.Sink.html#
+//! [`Framed`]: tokio_util::codec::Framed
+//!
+//! # Example
+//! ```no_run
+#![doc = include_str!("../examples/echo.rs")]
+//! ```
 
-extern crate bytes;
-#[cfg(test)]
-#[macro_use]
-extern crate maplit;
-extern crate serde;
-extern crate serde_json;
-extern crate tokio_codec;
-
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::io;
-use std::marker::PhantomData;
-use tokio_codec::{Decoder, Encoder};
+use std::{fmt, io, marker::PhantomData};
+use tokio_util::codec::{Decoder, Encoder};
 
 /// JSON-based codec.
 #[derive(Clone, Debug)]
-pub struct Codec<D, E> {
+pub struct Codec<D> {
     pretty: bool,
-    _priv: (PhantomData<D>, PhantomData<E>),
+    _priv: PhantomData<D>,
 }
 
-impl<D, E> Codec<D, E> {
+impl<D> Codec<D> {
     /// Creates a new `Codec`.
     ///
     /// `pretty` controls whether or not encoded values are pretty-printed.
     pub fn new(pretty: bool) -> Self {
         Self {
             pretty,
-            _priv: (PhantomData, PhantomData),
+            _priv: PhantomData,
         }
     }
 
@@ -40,20 +46,20 @@ impl<D, E> Codec<D, E> {
     }
 }
 
-impl<D, E> Default for Codec<D, E> {
+impl<D> Default for Codec<D> {
     fn default() -> Self {
         Self::new(false)
     }
 }
 
-impl<D, E> Decoder for Codec<D, E>
+impl<D> Decoder for Codec<D>
 where
     for<'de> D: Deserialize<'de>,
 {
     type Item = D;
     type Error = Error;
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<D>, Error> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Error> {
         let slice = &src.clone();
         let mut de = serde_json::Deserializer::from_slice(slice).into_iter();
         match de.next() {
@@ -78,11 +84,10 @@ where
     }
 }
 
-impl<D, E> Encoder for Codec<D, E>
+impl<D, E> Encoder<E> for Codec<D>
 where
     E: Serialize,
 {
-    type Item = E;
     type Error = Error;
 
     fn encode(&mut self, item: E, dst: &mut BytesMut) -> Result<(), Error> {
@@ -162,21 +167,22 @@ impl<'a> io::Write for BytesWriter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::Codec;
     use bytes::{BufMut, BytesMut};
-    use tokio_codec::{Decoder, Encoder};
-    use Codec;
+    use maplit::hashmap;
+    use tokio_util::codec::{Decoder, Encoder};
 
     #[test]
     fn decode_empty() {
         let mut buf = BytesMut::from(&b""[..]);
-        let mut codec: Codec<(), ()> = Codec::default();
+        let mut codec: Codec<()> = Codec::default();
         assert_eq!(codec.decode(&mut buf).unwrap(), None);
     }
 
     #[test]
     fn decode() {
         let mut buf = BytesMut::from(&b"null null null"[..]);
-        let mut codec: Codec<_, ()> = Codec::default();
+        let mut codec: Codec<_> = Codec::default();
         assert_eq!(codec.decode(&mut buf).unwrap(), Some(()));
         assert_eq!(codec.decode(&mut buf).unwrap(), Some(()));
         assert_eq!(codec.decode(&mut buf).unwrap(), Some(()));
@@ -187,7 +193,7 @@ mod tests {
     #[test]
     fn decode_partial() {
         let mut buf = BytesMut::from(&b"null null nu"[..]);
-        let mut codec: Codec<_, ()> = Codec::default();
+        let mut codec: Codec<_> = Codec::default();
         assert_eq!(codec.decode(&mut buf).unwrap(), Some(()));
         assert_eq!(codec.decode(&mut buf).unwrap(), Some(()));
         assert_eq!(codec.decode(&mut buf).unwrap(), None);
@@ -200,7 +206,7 @@ mod tests {
     #[test]
     fn decode_eof_trailing_whitespae() {
         let mut buf = BytesMut::from(&b"null\n"[..]);
-        let mut codec: Codec<_, ()> = Codec::default();
+        let mut codec: Codec<_> = Codec::default();
         assert_eq!(codec.decode_eof(&mut buf).unwrap(), Some(()));
         assert_eq!(codec.decode_eof(&mut buf).unwrap(), None);
         assert!(buf.is_empty());
@@ -209,7 +215,7 @@ mod tests {
     #[test]
     fn decode_err() {
         let mut buf = BytesMut::from(&b"null butts"[..]);
-        let mut codec: Codec<_, ()> = Codec::default();
+        let mut codec: Codec<_> = Codec::default();
         assert_eq!(codec.decode(&mut buf).unwrap(), Some(()));
         assert!(codec.decode(&mut buf).is_err());
     }
@@ -217,7 +223,7 @@ mod tests {
     #[test]
     fn encode() {
         let mut buf = BytesMut::new();
-        let mut codec: Codec<(), _> = Codec::default();
+        let mut codec: Codec<()> = Codec::default();
         codec.encode((), &mut buf).unwrap();
         assert_eq!(buf, &b"null"[..]);
     }
@@ -225,7 +231,7 @@ mod tests {
     #[test]
     fn encode_pretty() {
         let mut buf = BytesMut::new();
-        let mut codec: Codec<(), _> = Codec::default();
+        let mut codec: Codec<()> = Codec::default();
         codec
             .encode(hashmap! { "butts" => "lol" }, &mut buf)
             .unwrap();
